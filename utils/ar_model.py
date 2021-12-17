@@ -18,21 +18,49 @@ from misc import *
 from losses import *
 import pickle
 
-class pixcnn_model :
-    def __init__(self,json_dir,cuda=True,depth=6,depth2=4,ndf=32) :
+class ar_model :
+    def __init__(self,json_dir,cuda=True,depth=6,depth2=2,ndf=16,ar_mid_ndf=64) :
 
         torch.autograd.set_detect_anomaly(True)
 
         self.params = read_json(json_dir)
         self.device = torch.device('cuda') if cuda else torch.device('cpu')
 
-        self.netFE = FeatureExtractor(in_ch=2,ndf=ndf,depth=depth,padding_mode='zeros')
-        self.netPx = PixCNNPrior(feature_input_dim=ndf,out_ch=1,depth=depth2,padding_mode='zeros')
+        self.ksize = 5
+
+        self.netFE = SimpleNetDenseINDepth3(in_ch=2,out_nch=1,ndf=16,depth=depth)
+        fe_load = torch.load('checkpts_ndf16/epoch80.ckp')
+        self.netFE.load_state_dict(fe_load['modelG_state_dict'])
+
+        self.train_fe = False
+
+        if not self.train_fe :
+            self.netFE.blockout = nn.Sequential(
+                nn.Conv2d(16,16,7,1,3,padding_mode='circular'),
+                nn.ReLU(True),
+                nn.Conv2d(16,16,7,1,3,padding_mode='circular'),
+                nn.ReLU(True),
+                nn.Conv2d(16,ndf,1)
+            )
+        else :
+            self.netFE.blockout = nn.Conv2d(16,ndf,1)
+
+        if not self.train_fe :
+            for _p in self.netFE.parameters() :
+                _p.requires_grad_(False)
+            for _p in self.netFE.blockout.parameters() :
+                _p.requires_grad_(True)
+
+        self.netPx = ARPrior(feature_input_dim=ndf,out_ch=1,depth=depth2,mid_dim=ar_mid_ndf,ksize=self.ksize)
 
         self.netFE = self.netFE.to(self.device)
         self.netPx = self.netPx.to(self.device)
 
         self.depth2 = depth2
+
+        self.clip_grad = True
+
+        self.random_screen = True
 
     def getparams(self) :
         # reading the hyperparameter values from the json file
@@ -47,7 +75,12 @@ class pixcnn_model :
     
     def getopts(self) :
         # set up the optimizers and schedulers
-        self.optimizer = optim.Adam(list(self.netFE.parameters())+list(self.netPx.parameters()),lr=self.lr,betas=self.betas,amsgrad=True)
+        params_list = list(self.netPx.parameters())
+        if self.train_fe :
+            params_list += list(self.netFE.parameters())
+        else :
+            params_list += list(self.netFE.blockout.parameters())
+        self.optimizer = optim.Adam(params_list,lr=self.lr,betas=self.betas,amsgrad=True)
 
         self.lr_sche_ftn = lambda epoch : 1.0 if epoch < self.lr_step else (self.lr_gamma)**(epoch-self.lr_step)
         self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer,self.lr_sche_ftn)
@@ -76,13 +109,13 @@ class pixcnn_model :
                 for i,data in enumerate(trainloader) :
                     # inputG = input image in grayscale
                     inputG = data['img']
-                    imgsH = data['halftone']
+                    imgsR = data['halftone']
                     inputS = data['screened']
                     inputG = inputG.to(self.device)
                     inputS = inputS.to(self.device)
-                    imgsH = imgsH.to(self.device)
+                    imgsR = imgsR.to(self.device)
 
-                    output, loss_GT = self.fit(inputG,inputS,imgsH)
+                    output, loss_GT = self.fit(inputG,inputS,imgsR)
                     
                     # tqdm update
                     t.set_postfix_str('G loss : %.4f'%(loss_GT))
@@ -97,7 +130,7 @@ class pixcnn_model :
             # visually inspecting them helps finding issues with training
             # the validation results are saved in validation path
             if valloader is not None :
-                val_loss = self.val(valloader,self.val_path,4,epoch)
+                val_loss = self.val(valloader,self.val_path,epoch)
                 self.val_losses.append(val_loss)
 
             self.scheduler.step()
@@ -150,7 +183,7 @@ class pixcnn_model :
             self.train_losses = []
             self.val_losses = []
     
-    def test_final(self) :
+    def test_final(self,use_cpu=False) :
         self.loadckp_test()
 
         testloader = create_test_dataloaders(self.params)
@@ -161,15 +194,18 @@ class pixcnn_model :
         if not os.path.isdir(test_path) :
             os.mkdir(test_path)
 
-        self.test(testloader,test_path,save_scr=True)
+        self.test(testloader,test_path,save_scr=True,use_cpu=use_cpu)
     
     def loadckp_test(self) :
         self.ckp_load = torch.load(self.params['solver']['ckp_path'])
-        self.netFE.load_state_dict(self.ckp_load['modelFE_state_dict'])
         self.netPx.load_state_dict(self.ckp_load['modelPx_state_dict'])
+        self.netFE.load_state_dict(self.ckp_load['modelFE_state_dict'])
 
-    def test(self,testloader,test_dir,save_scr=True) :
-        with torch.no_grad() :
+    def test(self,testloader,test_dir,save_scr=True,use_cpu=False) :
+        # with torch.no_grad() :
+        with torch.inference_mode() :
+            # self.netFE.eval()
+            # self.netPx.eval()
             count = 0
             with tqdm(total=len(testloader),\
                     desc='Testing.. ',miniters=1) as t:
@@ -180,31 +216,50 @@ class pixcnn_model :
                     inputS = data['screened']
                     inputS = inputS.to(self.device)
 
-                    features = self.netFE(torch.cat([inputG,inputS],dim=1))
+                    features,_ = self.netFE(torch.cat([inputG,inputS],dim=1))
                     
                     img_size1,img_size2 = inputG.shape[2], inputG.shape[3]
                     bsize = inputG.shape[0]
-                    outputs = torch.zeros_like(inputG)
+                    # outputs = torch.zeros_like(inputG)
+                    # outputs = inputS.detach().clone() # initialize using screen
 
-                    psize = 3+4*(self.depth2-1)
+                    # psize = self.psize
+
+                    # combined = torch.cat([features,outputs],dim=1)
                     
+                    # outputs = torch.zeros_like(inputG)
+                    if use_cpu :
+                        outputs = inputS.detach().cpu()
+                        features = features.detach().cpu()
+                        self.netPx = self.netPx.to(torch.device('cpu'))
+                    else :
+                        outputs = inputS.detach().clone()
+                        features = features.detach()
+                    pad = self.ksize//2
+                    outputs = F.pad(outputs,(pad,pad,pad,pad)) # zero-pad outputs
+                    # print(outputs.shape)
+
+                    # features = features.detach().cpu()
+                    # outputs = outputs.cpu()
+
                     for j in range(outputs.shape[0]) :
                         for y in range(img_size1) :
                             for x in range(img_size2) :
-                                start_y = max(y-psize//2,0)
-                                start_x = max(x-psize//2,0)
-                                end_y = min(y+psize//2+1,img_size1)
-                                end_x = min(x+psize//2+1,img_size2)
-
-                                features_curr = features[j,:,start_y:end_y,start_x:end_x].unsqueeze(0)
-                                outputs_curr = outputs[j,:,start_y:end_y,start_x:end_x].unsqueeze(0)
-                                probs = self.netPx(features_curr,outputs_curr)
-                                prob = probs[j,0,y-start_y,x-start_x]
-                                outputs[j,0,y,x] = torch.bernoulli(prob)
+                                
+                                features_curr = features[j,:,y,x].squeeze()
+                                outputs_prev = outputs[j,0,y,x:x+self.ksize].squeeze()
+                                for ppp in range(1,pad) :
+                                    outputs_prev = torch.cat([outputs_prev,outputs[j,0,y+ppp,x:x+self.ksize].squeeze()])
+                                outputs_prev = torch.cat([outputs_prev,outputs[j,0,y+pad,x:x+pad].squeeze()])
+                                
+                                probs = self.netPx(torch.cat([features_curr,outputs_prev]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
+                                prob = probs.squeeze()
+                                outputs[j,0,y+pad,x+pad] = torch.bernoulli(prob)
+                        outputs_curr = outputs[j,0,pad:img_size1+pad,pad:img_size2+pad]
 
                         imgR = torch.zeros([img_size1,img_size2],dtype=torch.float32)
-                        imgR[:,:] = outputs[j,:,:].squeeze()
-                        imgR = imgR.detach().numpy()
+                        imgR[:,:] = outputs_curr.squeeze()
+                        imgR = imgR.detach().numpy() if use_cpu else imgR.detach().cpu().numpy()
                         imgR = np.clip(imgR,0,1)
                         imgBGR = (255*imgR).astype('uint8')
                         imname = test_dir+str(count+1)+'.png'
@@ -214,7 +269,7 @@ class pixcnn_model :
                         if save_scr :
                             imgS = torch.zeros([img_size1,img_size2],dtype=torch.float32)
                             imgS[:,:] = inputS[j,0,:,:].squeeze()
-                            imgS = imgS.numpy()
+                            imgS = imgS.cpu().numpy()
                             sname = test_dir+str(count+1)+'_scr.png'
                             cv2.imwrite(sname,(255*imgS).astype('uint8'))
                         
@@ -237,37 +292,48 @@ class pixcnn_model :
 
                     imgsH = data['halftone'].to(self.device)
 
-                    features = self.netFE(torch.cat([inputG,inputS],dim=1))
+                    features,_ = self.netFE(torch.cat([inputG,inputS],dim=1))
+
+                    pad_pix_nums = self.ksize*(self.ksize//2)+self.ksize//2 # assumes ksize is odd
+                    imgsH_pad = torch.zeros((features.shape[0],pad_pix_nums,features.shape[2]+self.ksize//2,features.shape[3]+self.ksize)).to(self.device)
+                    for i in range(pad_pix_nums) :
+                        xshift = self.ksize//2-i%(self.ksize)+self.ksize//2
+                        yshift = self.ksize//2-i//(self.ksize)
+                        imgsH_pad[:,i,yshift:yshift+features.shape[2],xshift:xshift+features.shape[3]] = imgsH.squeeze()
+                    imgsH_pad = imgsH_pad[:,:,:features.shape[2],self.ksize//2:self.ksize//2+features.shape[3]].detach()
                     
                     img_size1,img_size2 = inputG.shape[2], inputG.shape[3]
                     bsize = inputG.shape[0]
 
-                    outputs = self.netPx(features,imgsH)
+                    outputs_loss = self.netPx(torch.cat([features,imgsH_pad],dim=1))
 
-                    loss = self.GT_loss(outputs,imgsH)
+                    loss = self.GT_loss(outputs_loss,imgsH).item()
 
                     running_loss += loss/len(testloader)
 
                     if ii < 4 : # generate 4 images for visual inspection
-                        outputs = torch.zeros_like(inputG)
+                        # outputs = torch.zeros_like(inputG)
+                        outputs = inputS.detach().clone()
+                        pad = self.ksize//2
+                        outputs = F.pad(outputs,(pad,pad,pad,pad)) # zero-pad outputs
 
-                        psize = 3+4*(self.depth2-1)
                         for j in range(outputs.shape[0]) :
                             for y in range(img_size1) :
                                 for x in range(img_size2) :
-                                    start_y = max(y-psize//2,0)
-                                    start_x = max(x-psize//2,0)
-                                    end_y = min(y+psize//2+1,img_size1)
-                                    end_x = min(x+psize//2+1,img_size2)
-
-                                    features_curr = features[j,:,start_y:end_y,start_x:end_x].unsqueeze(0)
-                                    outputs_curr = outputs[j,:,start_y:end_y,start_x:end_x].unsqueeze(0)
-                                    probs = self.netPx(features_curr,outputs_curr)
-                                    prob = probs[j,0,y-start_y,x-start_x]
-                                    outputs[j,0,y,x] = torch.bernoulli(prob)
+                                    
+                                    features_curr = features[j,:,y,x].squeeze()
+                                    outputs_prev = outputs[j,0,y,x:x+self.ksize].squeeze()
+                                    for ppp in range(1,pad) :
+                                        outputs_prev = torch.cat([outputs_prev,outputs[j,0,y+ppp,x:x+self.ksize].squeeze()])
+                                    outputs_prev = torch.cat([outputs_prev,outputs[j,0,y+pad,x:x+pad].squeeze()])
+                                    
+                                    probs = self.netPx(torch.cat([features_curr,outputs_prev]).unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
+                                    prob = probs.squeeze()
+                                    outputs[j,0,y+pad,x+pad] = torch.bernoulli(prob)
+                            outputs_curr = outputs[j,0,pad:img_size1+pad,pad:img_size2+pad]
 
                             imgR = torch.zeros([img_size1,img_size2],dtype=torch.float32)
-                            imgR[:,:] = outputs[j,:,:].squeeze()
+                            imgR[:,:] = outputs_curr.squeeze()
                             imgR = imgR.detach().numpy()
                             imgR = np.clip(imgR,0,1)
                             imgBGR = (255*imgR).astype('uint8')
@@ -292,8 +358,8 @@ class pixcnn_model :
             path = self.pretrained_path+'/epoch'+str(epoch+1)+'.ckp'
             torch.save({
                 'epoch':epoch+1,
-                'modelFE_state_dict':self.netFE.state_dict(),
                 'modelPx_state_dict':self.netPx.state_dict(),
+                'modelFE_state_dict':self.netFE.state_dict(),
                 'optimizer_state_dict':self.optimizer.state_dict(),
                 'scheduler_state_dict':self.scheduler.state_dict(),
                 'loss':self.running_loss
@@ -303,8 +369,8 @@ class pixcnn_model :
     def loadckp(self) :
         self.ckp_load = torch.load(self.params['solver']['ckp_path'])
         self.start_epochs = self.ckp_load['epoch']
-        self.netFE.load_state_dict(self.ckp_load['modelFE_state_dict'])
         self.netPx.load_state_dict(self.ckp_load['modelPx_state_dict'])
+        self.netFE.load_state_dict(self.ckp_load['modelFE_state_dict'])
         self.optimizer.load_state_dict(self.ckp_load['optimizer_state_dict'])
         self.scheduler.load_state_dict(self.ckp_load['scheduler_state_dict'])
 
@@ -314,10 +380,21 @@ class pixcnn_model :
 
     def fit(self,inputG,inputS,imgsH) :
 
-        features = self.netFE(torch.cat([inputG,inputS],dim=1))
-        outputs = self.netPx(features,imgsH)
+        features,_ = self.netFE(torch.cat([inputG,inputS],dim=1))
 
-        loss = self.GT_loss(outputs,imgsH)
+        pad_pix_nums = self.ksize*(self.ksize//2)+self.ksize//2 # assumes ksize is odd
+        imgsH_pad = torch.zeros((features.shape[0],pad_pix_nums,features.shape[2]+self.ksize//2,features.shape[3]+self.ksize)).to(self.device)
+        for i in range(pad_pix_nums) :
+            xshift = self.ksize//2-i%(self.ksize)+self.ksize//2
+            yshift = self.ksize//2-i//(self.ksize)
+            imgsH_pad[:,i,yshift:yshift+features.shape[2],xshift:xshift+features.shape[3]] = imgsH.squeeze()
+        imgsH_pad = imgsH_pad[:,:,:features.shape[2],self.ksize//2:self.ksize//2+features.shape[3]].detach()
+
+        outputs = self.netPx(torch.cat([features,imgsH_pad],dim=1))
+
+        # loss = self.GT_loss(outputs,imgsH)
+        pad = self.ksize//2
+        loss = self.GT_loss(outputs[:,:,pad:-pad,pad:-pad],imgsH[:,:,pad:-pad,pad:-pad])
         
         # generator weight update
         # for the generator, all the loss terms are used
@@ -325,8 +402,12 @@ class pixcnn_model :
 
         loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(self.netFE.parameters(),1.0)
-        torch.nn.utils.clip_grad_norm_(self.netPx.parameters(),1.0)
+        if self.clip_grad :
+            torch.nn.utils.clip_grad_norm_(self.netPx.parameters(),1.0)
+            if self.train_fe :
+                torch.nn.utils.clip_grad_norm_(self.netFE.parameters(),1.0)
+            else :
+                torch.nn.utils.clip_grad_norm_(self.netFE.blockout.parameters(),1.0)
 
         # backpropagation for generator and encoder
         self.optimizer.step()
@@ -334,3 +415,34 @@ class pixcnn_model :
         self.running_loss += loss.item()/self.num_batches
 
         return outputs.detach(), loss.item()
+    
+    def test_pad(self) :
+        imgsH = torch.tensor([[[[1,2,3,4,5],
+            [6,7,8,9,10],
+            [11,12,13,14,15],
+            [16,17,18,19,20],
+            [21,22,23,24,25]]]])
+        self.ksize = 5
+
+        pad_pix_nums = self.ksize*(self.ksize//2)+self.ksize//2 # assumes ksize is odd
+        imgsH_pad = torch.zeros((1,pad_pix_nums,5+self.ksize//2,5+self.ksize))
+        for i in range(pad_pix_nums) :
+            xshift = self.ksize//2-i%(self.ksize)+self.ksize//2
+            yshift = self.ksize//2-i//(self.ksize)
+            imgsH_pad[:,i,yshift:yshift+5,xshift:xshift+5] = imgsH.squeeze()
+        imgsH_pad = imgsH_pad[:,:,:5,self.ksize//2:self.ksize//2+5]
+        # print(imgsH_pad)
+
+        pad = self.ksize//2
+        outputs = F.pad(imgsH,(pad,pad,pad,pad))
+        x = 2
+        y = 2
+        j = 0
+        outputs_prev = outputs[j,0,y,x:x+self.ksize].squeeze()
+        for ppp in range(1,pad) :
+            outputs_prev = torch.cat([outputs_prev,outputs[j,0,y+ppp,x:x+self.ksize].squeeze()])
+        outputs_prev = torch.cat([outputs_prev,outputs[j,0,y+pad,x:x+pad].squeeze()])
+        print(outputs_prev)
+
+        features = torch.randn((5))
+        print(torch.cat([features,outputs_prev]))

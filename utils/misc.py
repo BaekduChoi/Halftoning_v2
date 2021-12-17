@@ -28,7 +28,7 @@ import numpy as np
     Function that reads the json file and generates the dataloader to be used
     Only generates training and validation dataloader
 """
-def create_dataloaders(params) :
+def create_dataloaders(params,random_screen=False) :
     train_img_root = params["datasets"]["train"]["root_img"]
     train_halftone_root = params["datasets"]["train"]["root_halftone"]
     batch_size = int(params["datasets"]["train"]["batch_size"])
@@ -43,7 +43,8 @@ def create_dataloaders(params) :
     train_dataset = HalftoneDataset(train_img_root,
                                         train_halftone_root,
                                         train_img_type,
-                                        train_use_aug)
+                                        train_use_aug,
+                                        random_screen)
     train_dataloader = DataLoader(train_dataset,
                                   batch_size=batch_size,
                                   num_workers=n_workers,
@@ -52,7 +53,8 @@ def create_dataloaders(params) :
     # no need to use augmentation for validation data
     val_dataset = HalftoneDataset(val_img_root,
                                         val_halftone_root,
-                                        val_img_type)
+                                        val_img_type,
+                                        random_screen)
     val_dataloader = DataLoader(val_dataset,
                                 batch_size=1,
                                 num_workers=n_workers,

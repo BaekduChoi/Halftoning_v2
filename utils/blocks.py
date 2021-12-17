@@ -401,34 +401,15 @@ class ConvBlockINEDenseSN(nn.Module) :
 
         return out
 
-"""
-    Dense block w. spatially-adaptive conditional normalization
-    similar to that in SPADE (https://github.com/NVlabs/SPADE/blob/master/)
-"""
-class DenseWSAN(nn.Module) :
-    def __init__(self,block,instance_norm=True,n_ch=None) :
+class GatedLinear(nn.Module) :
+    def __init__(self,in_ch,out_ch) :
         super().__init__()
-        self.block = block
-        self.instance_norm = instance_norm
-        if self.instance_norm :
-            self.norm = nn.InstanceNorm2d(n_ch)
+        self.lin1 = nn.Linear(in_ch,out_ch)
+        self.lin2 = nn.Linear(in_ch,out_ch)
+
+        self.sig = nn.Sigmoid()
+        self.tanh = nn.Tanh()
     
-    def forward(self,x,g,b) :
-        x = self.block(x)
-        if self.instance_norm :
-            x = self.norm(x)
-        return x*(1+g)+b
-
-"""
-    Pixelnorm borrowed from https://github.com/huangzh13/StyleGAN.pytorch/blob/master/models/CustomLayers.py
-    Added affine transformation after normalization
-"""
-class PixelNormAffine(nn.Module):
-    def __init__(self, epsilon=1e-8):
-        super().__init__()
-        self.epsilon = epsilon
-        self.gamma = nn.Parameter(1.0)
-        self.beta = nn.Parameter(0.0)
-
-    def forward(self, x):
-        return self.gamma * (x * torch.rsqrt(torch.mean(x ** 2, dim=1, keepdim=True) + self.epsilon)) + self.beta
+    def forward(self,x) :
+        return self.tanh(self.lin1(x))*self.sig(self.lin2(x))
+    

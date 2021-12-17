@@ -61,14 +61,17 @@ def readScreen() :
     
     return screen
 
-def screenImage(img,screen) :
+def screenImage(img,screen,random_screen=False) :
     screen_result = np.zeros(img.shape)
     screen_size = 256
 
+    y0 = np.random.randint(0,256) if random_screen else 0
+    x0 = np.random.randint(0,256) if random_screen else 0
+
     for y in range(img.shape[0]) :
         for x in range(img.shape[1]) :
-            m = y%screen_size
-            n = x%screen_size
+            m = (y0+y)%screen_size
+            n = (x0+x)%screen_size
             if img[y][x] >= float(screen[m][n])/255.0 :
                 screen_result[y][x] = 1.0
     
@@ -78,11 +81,12 @@ def screenImage(img,screen) :
     Dataset class for halftoning
 """
 class HalftoneDataset(Dataset) :
-    def __init__(self,root_img,root_halftone,img_type='.png',augment=False) :
+    def __init__(self,root_img,root_halftone,img_type='.png',augment=False,random_screen=False) :
         self.root_img = root_img
         self.root_halftone = root_halftone
         self.img_type = img_type
         self.screen = readScreen()
+        self.random_screen = random_screen
 
         if self.root_img[-1] != '/' :
             self.root_img += '/'
@@ -122,7 +126,7 @@ class HalftoneDataset(Dataset) :
             imgH = cv2.imread(imgh_name,0)
             imgH = augmentImage(imgH,hf,vf,rot)
             imgH = imgH.astype(np.float32)/255.0
-            imgS = screenImage(imgG,self.screen).astype(np.float32)
+            imgS = screenImage(imgG,self.screen,self.random_screen).astype(np.float32)
             
         # if no augmentation is used, directly use the image
         # generate both RGB and grayscale image

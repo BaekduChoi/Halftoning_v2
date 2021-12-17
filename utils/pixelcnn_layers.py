@@ -42,7 +42,32 @@ class GatedMaskedConv2d(nn.Module):
         gate = self.sigm(self.masked_conv_2(x))
         return inp*gate
 
-    
+class _GatedMaskedConv2d(nn.Module):
+    def __init__(self,mask_type,in_ch,out_ch,ksize,stride=1,padding=0,padding_mode='zeros'):
+        super(GatedMaskedConv2d, self).__init__()
+        self.masked_conv = MaskedConv2d(
+            mask_type,
+            in_channels=in_ch,
+            out_channels=2*out_ch,
+            kernel_size=ksize,
+            stride=stride,
+            padding=padding,
+            padding_mode=padding_mode)
+        self.tanh = nn.Tanh()
+        self.sigm = nn.Sigmoid()
+        self.out_ch = out_ch
+
+    def forward(self, x):
+        """
+        x: input
+        """
+        x = self.masked_conv(x)
+        x1 = x[:,:self.out_ch,:,:]
+        x2 = x[:,self.out_ch:,:,:]
+
+        inp = self.tanh(x1)
+        gate = self.sigm(x2)
+        return inp*gate
 
 class CondGatedMaskedConv2d(nn.Module):
     def __init__(self, *args, **kwargs):
