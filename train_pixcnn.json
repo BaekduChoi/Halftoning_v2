@@ -1,0 +1,32 @@
+{
+	"datasets": {
+		"train": {
+			"root_img": "../dbsnet/images_div2k_all",
+			"root_halftone": "../dbsnet/halftones_div2k_all",
+			"img_type": ".png",
+			"batch_size": 4,
+			"n_workers": 4,
+			"use_aug": false
+		},
+		"val": {
+			"root_img": "../dbsnet/val_imgs_patch/",
+			"root_halftone": "../dbsnet/val_halftones_patch/",
+			"img_type": ".png"
+		}
+	},
+	
+	"solver": {
+		"learning_rate": 0.0002,
+		"lr_step": 5,
+		"lr_gamma": 1.0,
+		"num_epochs": 30,
+		"save_ckp_step": 1,
+		"pretrain": false,
+		"pretrained_path": "./pixcnn/",
+		"ckp_path": "./pixcnn/epoch16.ckp",
+		"val_path": "./pixcnn/val/",
+		"lambda_hvs": 0.0,
+		"beta1": 0.5,
+		"beta2": 0.999
+	}
+}

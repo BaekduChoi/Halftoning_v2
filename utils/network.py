@@ -139,7 +139,125 @@ def init_weights_kaiming(m) :
         elif isinstance(layer,DenseWSAN) :
             init_weights_kaiming(layer.block)
 
-class ARPrior(nn.Module) :
+class FeatureExtractor(nn.Module) :
+    def __init__(self,in_ch=1,ndf=32,ksize=7,depth=6,padding_mode='zeros') :
+        super().__init__()
+
+        self.in_ch = in_ch
+        self.ndf = ndf
+
+        padding = (ksize-1)//2
+
+        self.inblock = nn.Sequential(
+            nn.Conv2d(in_ch,self.ndf,1),
+            nn.ReLU(True),
+            nn.Conv2d(self.ndf,self.ndf,ksize,1,padding,padding_mode=padding_mode),
+            nn.ReLU(True),
+        )
+
+        L1 = [ConvBlockINEDense(self.ndf,act='relu',ksize=ksize,padding_mode=padding_mode) for i in range(depth)]
+        self.block1 = nn.Sequential(*L1)    
+
+    def forward(self,x) :
+
+        x1 = self.inblock(x)
+        x2 = self.block1(x1)
+
+        return x2
+
+class PixCNNPrior(nn.Module) :
+    def __init__(self,feature_input_dim=32,out_ch=1,ksize=3,depth=4,padding_mode='zeros',mid_dim=256) :
+        super().__init__()
+
+        in_ch = feature_input_dim+out_ch
+        self.ndf = mid_dim
+
+        padding = (ksize-1)//2
+
+        L2 = [GatedMaskedConv2d('A',in_ch,self.ndf,ksize,1,padding,padding_mode=padding_mode)]
+        for _ in range(depth-1) :
+            L2 += [GatedMaskedConv2d('B',self.ndf,self.ndf,ksize,1,padding,padding_mode=padding_mode)]
+        L2 += [nn.Conv2d(self.ndf,out_ch,1),nn.Sigmoid()]
+
+        self.block = nn.Sequential(*L2)
+    
+    def forward(self,feature,halftone) :
+        x = torch.cat([feature,halftone],dim=1)
+        return self.block(x)
+
+class PixCNNPrior_v2(nn.Module) :
+    def __init__(self,feature_input_dim=16,out_ch=1,ksize=3,depth=3,padding_mode='zeros',mid_dim=32) :
+        super().__init__()
+
+        in_ch = feature_input_dim+out_ch
+        self.ndf = mid_dim
+
+        padding = (ksize-1)//2
+
+        if depth == 1 :
+            L2 = [MaskedConv2d('A',in_ch,out_ch,ksize,1,padding,padding_mode=padding_mode),nn.Sigmoid()]
+        else :
+            L2 = [GatedMaskedConv2d('A',in_ch,self.ndf,ksize,1,padding,padding_mode=padding_mode)]
+            for _ in range(depth-2) :
+                L2 += [GatedMaskedConv2d('B',self.ndf,self.ndf,ksize,1,padding,padding_mode=padding_mode)]
+            L2 += [MaskedConv2d('B',self.ndf,out_ch,ksize,1,padding,padding_mode=padding_mode),nn.Sigmoid()]
+
+        self.block = nn.Sequential(*L2)
+    
+    def forward(self,feature,halftone) :
+        x = torch.cat([feature,halftone],dim=1)
+        return self.block(x)
+
+class FeatureExtractor_v2(nn.Module) :
+    def __init__(self,in_ch=1,ndf=32,out_dim=4,ksize=7,depth=6,padding_mode='zeros') :
+        super().__init__()
+
+        self.in_ch = in_ch
+        self.ndf = ndf
+
+        padding = (ksize-1)//2
+
+        self.inblock = nn.Sequential(
+            nn.Conv2d(in_ch,self.ndf,1),
+            nn.ReLU(True),
+            nn.Conv2d(self.ndf,self.ndf,ksize,1,padding,padding_mode=padding_mode),
+            nn.ReLU(True),
+        )
+
+        L1 = [ConvBlockINEDense(self.ndf,act='relu',ksize=ksize,padding_mode=padding_mode) for i in range(depth)]
+        L1 += [nn.Conv2d(self.ndf,out_dim,1)]
+        self.block1 = nn.Sequential(*L1)    
+
+    def forward(self,x) :
+
+        x1 = self.inblock(x)
+        x2 = self.block1(x1)
+
+        return x2
+
+class PixCNNPrior_v3(nn.Module) :
+    def __init__(self,feature_input_dim=16,out_ch=1,ksize=3,depth=3,padding_mode='zeros',mid_dim=32) :
+        super().__init__()
+
+        in_ch = feature_input_dim+out_ch
+        self.ndf = mid_dim
+
+        padding = (ksize-1)//2
+
+        if depth == 1 :
+            L2 = [MaskedConv2d('A',in_ch,out_ch,ksize,1,padding,padding_mode=padding_mode),nn.Sigmoid()]
+        else :
+            L2 = [GatedMaskedConv2d('A',in_ch,self.ndf,ksize,1,padding,padding_mode=padding_mode)]
+            for _ in range(depth-2) :
+                L2 += [GatedMaskedConv2d('B',self.ndf,self.ndf,ksize,1,padding,padding_mode=padding_mode)]
+            L2 += [MaskedConv2d('B',self.ndf,out_ch,ksize,1,padding,padding_mode=padding_mode),nn.Sigmoid()]
+
+        self.block = nn.Sequential(*L2)
+    
+    def forward(self,x) :
+        return self.block(x)
+
+class PixCNNPrior_v4(nn.Module) :
     def __init__(self,feature_input_dim=16,out_ch=1,ksize=3,depth=3,mid_dim=32) :
         super().__init__()
 
@@ -150,6 +268,27 @@ class ARPrior(nn.Module) :
         if depth > 1 :
             for _ in range(depth-1) :
                 L2 += [nn.Conv2d(in_ch,self.ndf,1),nn.ReLU()]
+                in_ch = self.ndf
+            L2 += [nn.Conv2d(self.ndf,out_ch,1),nn.Sigmoid()]
+        else :
+            L2 += [nn.Conv2d(in_ch,out_ch,1),nn.Sigmoid()]
+
+        self.block = nn.Sequential(*L2)
+    
+    def forward(self,x) :
+        return self.block(x)
+
+class PixCNNPrior_v5(nn.Module) :
+    def __init__(self,feature_input_dim=16,out_ch=1,ksize=3,depth=3,mid_dim=32) :
+        super().__init__()
+
+        in_ch = feature_input_dim+ksize*(ksize//2)+ksize//2
+        self.ndf = mid_dim
+
+        L2 = []
+        if depth > 1 :
+            for _ in range(depth-1) :
+                L2 += [nn.Conv2d(in_ch,self.ndf,1),nn.Tanh()]
                 in_ch = self.ndf
             L2 += [nn.Conv2d(self.ndf,out_ch,1),nn.Sigmoid()]
         else :

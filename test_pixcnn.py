@@ -10,7 +10,7 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__),'.'))
 
 from utils.misc import read_json
-from utils.ar_model import ar_model
+from utils.pixcnn_model import pixcnn_model
 import argparse
 
 """
@@ -21,10 +21,10 @@ if __name__ == '__main__' :
     parser.add_argument('-opt',type=str,required=True)
     args = parser.parse_args()
     json_dir = args.opt
+    
+    model = pixcnn_model(json_dir,cuda=True)
+    model.test_final()
 
-    model = ar_model(json_dir,cuda=True,depth2=2)
-    model.train()
-    # model.test_pad()
             
             
     

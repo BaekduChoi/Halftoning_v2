@@ -81,10 +81,10 @@ def create_dataloaders_extra(params) :
                                         train_halftone_root,
                                         train_img_type,
                                         train_use_aug)
-    train_dataset2 = HalftoneDataset('./img_patch/',
-                                        './halftone_patch/',
+    train_dataset2 = HalftoneDataset("./constant_imgs",
+                                        "./constant_hfts",
                                         '.png',
-                                        train_use_aug)
+                                        True)
     train_dataset = ConcatDataset([train_dataset1,train_dataset2])
     train_dataloader = DataLoader(train_dataset,
                                   batch_size=batch_size,
