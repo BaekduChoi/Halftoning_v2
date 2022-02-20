@@ -95,4 +95,4 @@ class RaHingeGANLoss(object) :
         loss1 = F.relu(1-dxr)
         loss2 = F.relu(1+dxf)
 
-        return loss1+loss2
+        return (loss1+loss2).mean()
