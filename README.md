@@ -1,5 +1,7 @@
 # Digital halftoning using deep AR models
 
+Baekdu Choi (choi504@purdue.edu) and J. P. Allebach
+
 This is an implementation of digital halftoning using deep AR models in [PyTorch](https://pytorch.org/). 
 
 Digital halftoning is a image translation problem where the image is represented using only 0 or 1 as pixel values instead of continuous (ignoring quantization) pixel values.
